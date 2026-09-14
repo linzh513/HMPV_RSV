@@ -1,35 +1,33 @@
-# ============================================================
-# HMPV scRNA-seq preprocessing pipeline
+# HMPV_RSV scRNA-seq preprocessing pipeline
 #
-# Description:
-#   This script performs:
-#   1. Raw 10X matrix loading
-#   2. Seurat object creation
-#   3. Multi-sample merging
-#   4. Preliminary batch-effect evaluation
-#   5. Cell-level quality control
-#   6. Doublet detection using scDblFinder
-#   7. Normalization, PCA, graph-based clustering, and UMAP
+# Workflow:
+# 1. Load raw 10X matrices
+# 2. Create Seurat objects
+# 3. Merge multiple samples
+# 4. Evaluate batch effects
+# 5. Perform cell-level quality control
+# 6. Detect doublets using scDblFinder
+# 7. Normalize data, run PCA, clustering, and UMAP
 #
-# Recommended software environment:
-#   Seurat >= 5.0
-#   SeuratObject >= 5.0
-#   SingleCellExperiment
-#   scDblFinder
-#   clustree
-#   kBET
+# Required packages:
+# Seurat >= 5.0
+# SeuratObject >= 5.0
+# SingleCellExperiment
+# scDblFinder
+# clustree
+# kBET
 #
-# Important:
-#   Raw count matrices and RDS files should not be uploaded to GitHub.
-#   Use .gitignore to exclude large data files and generated outputs.
-# ============================================================
+# Raw matrices, RDS files, figures, tables, and logs should not be
+# uploaded to GitHub. Use .gitignore to exclude these files.
 
 
-# ============================================================
+# ------------------------------------------------------------------------------
 # 1. Environment setup
-# ============================================================
+# ------------------------------------------------------------------------------
 
-.libPaths("/home/lzh/miniconda3/envs/seurat5/lib/R/library")
+# Set this path according to your local R environment.
+# Avoid hard-coding machine-specific paths in public repositories.
+# .libPaths("/home/lzh/miniconda3/envs/seurat5/lib/R/library")
 
 set.seed(1234)
 
@@ -45,16 +43,21 @@ suppressPackageStartupMessages({
 
 message("Seurat version: ", packageVersion("Seurat"))
 message("SeuratObject version: ", packageVersion("SeuratObject"))
-message("SingleCellExperiment version: ",
-        packageVersion("SingleCellExperiment"))
+message("SingleCellExperiment version: ", packageVersion("SingleCellExperiment"))
 message("scDblFinder version: ", packageVersion("scDblFinder"))
 
 
-# ============================================================
-# 2. Project paths
-# ============================================================
 
-project_dir <- "/mnt/sda1/lzh/test/cjl/hmpv"
+# ------------------------------------------------------------------------------
+# 2. Project configuration
+# ------------------------------------------------------------------------------
+# Set the project directory through an environment variable when possible:
+# Sys.setenv(HMPV_PROJECT_DIR = "/path/to/your/project")
+
+project_dir <- Sys.getenv(
+  "HMPV_PROJECT_DIR",
+  unset = "/mnt/sda1/lzh/test/cjl/hmpv"
+)
 
 pre_dir <- file.path(project_dir, "pre")
 pre_figure_dir <- file.path(pre_dir, "figures")
@@ -78,10 +81,10 @@ invisible(
 )
 
 
-# ============================================================
-# 3. Utility functions
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 3. Utility functions
+# ------------------------------------------------------------------------------
 save_pdf <- function(plot_object, file, width, height) {
   ggsave(
     filename = file,
@@ -93,7 +96,6 @@ save_pdf <- function(plot_object, file, width, height) {
     limitsize = FALSE
   )
 }
-
 
 check_directory <- function(path, sample_id) {
   if (!dir.exists(path)) {
@@ -108,7 +110,6 @@ check_directory <- function(path, sample_id) {
   message("Input directory verified for sample ", sample_id)
 }
 
-
 read_10x_counts <- function(path, sample_id) {
   check_directory(path, sample_id)
 
@@ -117,18 +118,15 @@ read_10x_counts <- function(path, sample_id) {
 
   counts <- Read10X(data.dir = path)
 
-  # Read10X() may return either:
-  # 1. A sparse count matrix
-  # 2. A list containing multiple modalities
+  # Read10X() may return either a sparse matrix or a list of modalities.
   if (is.list(counts)) {
     if ("Gene Expression" %in% names(counts)) {
       counts <- counts[["Gene Expression"]]
     } else {
       stop(
-        "The 10X directory for sample ",
+        "Multiple modalities were found for sample ",
         sample_id,
-        " contains multiple modalities, but ",
-        "'Gene Expression' was not found."
+        ", but 'Gene Expression' was not found."
       )
     }
   }
@@ -141,12 +139,8 @@ read_10x_counts <- function(path, sample_id) {
     )
   }
 
-  if (ncol(counts) == 0 || nrow(counts) == 0) {
-    stop(
-      "The count matrix for sample ",
-      sample_id,
-      " is empty."
-    )
+  if (nrow(counts) == 0 || ncol(counts) == 0) {
+    stop("The count matrix for sample ", sample_id, " is empty.")
   }
 
   seurat_object <- CreateSeuratObject(
@@ -156,12 +150,10 @@ read_10x_counts <- function(path, sample_id) {
     min.features = 0
   )
 
-  # Keep the original sample identity explicitly.
   seurat_object$sample_id <- sample_id
 
-  return(seurat_object)
+  seurat_object
 }
-
 
 write_object_summary <- function(object, file) {
   summary_lines <- c(
@@ -184,10 +176,10 @@ write_object_summary <- function(object, file) {
 }
 
 
-# ============================================================
-# 4. Define the input samples
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 4. Input sample manifest
+# ------------------------------------------------------------------------------
 sample_manifest <- data.frame(
   sample_id = c(
     "hMPVsevere01",
@@ -226,21 +218,17 @@ sample_manifest <- data.frame(
   stringsAsFactors = FALSE
 )
 
-write.csv(
-  sample_manifest,
-  file = file.path(pre_table_dir, "sample_manifest.csv"),
-  row.names = FALSE
-)
-
 if (anyDuplicated(sample_manifest$sample_id) > 0) {
   stop("Duplicated sample_id values were found in sample_manifest.")
 }
 
+write.csv(sample_manifest, file = file.path(pre_table_dir, "sample_manifest.csv"), row.names = FALSE)
 
-# ============================================================
-# 5. Read all samples and create Seurat objects
-# ============================================================
 
+
+# ------------------------------------------------------------------------------
+# 5. Read samples and create Seurat objects
+# ------------------------------------------------------------------------------
 seurat_objects <- lapply(
   seq_len(nrow(sample_manifest)),
   function(i) {
@@ -255,33 +243,18 @@ names(seurat_objects) <- sample_manifest$sample_id
 
 sample_summary_before_merge <- data.frame(
   sample_id = names(seurat_objects),
-  genes = vapply(
-    seurat_objects,
-    nrow,
-    numeric(1)
-  ),
-  cells = vapply(
-    seurat_objects,
-    ncol,
-    numeric(1)
-  ),
+  genes = vapply(seurat_objects, nrow, numeric(1)),
+  cells = vapply(seurat_objects, ncol, numeric(1)),
   stringsAsFactors = FALSE
 )
 
-write.csv(
-  sample_summary_before_merge,
-  file = file.path(
-    pre_table_dir,
-    "sample_summary_before_merge.csv"
-  ),
-  row.names = FALSE
-)
+write.csv(sample_summary_before_merge, file = file.path(pre_table_dir, "sample_summary_before_merge.csv"), row.names = FALSE)
 
 
-# ============================================================
-# 6. Merge all samples
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 6. Merge samples
+# ------------------------------------------------------------------------------
 merged_seurat <- merge(
   x = seurat_objects[[1]],
   y = seurat_objects[-1],
@@ -289,54 +262,37 @@ merged_seurat <- merge(
   project = "HMPV_RSV_PBMC"
 )
 
-# Explicitly define sample_id from orig.ident after merging.
-merged_seurat$sample_id <- as.character(
-  merged_seurat$orig.ident
-)
+merged_seurat$sample_id <- as.character(merged_seurat$orig.ident)
 
 message("Merged Seurat object:")
 print(merged_seurat)
 
-write_object_summary(
-  merged_seurat,
-  file.path(
-    pre_log_dir,
-    "01_merged_object_summary.txt"
-  )
-)
+write_object_summary(merged_seurat, file.path(pre_log_dir, "01_merged_object_summary.txt"))
 
-saveRDS(
-  merged_seurat,
-  file.path(
-    pre_dir,
-    "rawData_merged.rds"
-  )
-)
+saveRDS(merged_seurat, file.path(pre_dir, "rawData_merged.rds"))
 
 
-# ============================================================
+
+# ------------------------------------------------------------------------------
 # 7. Prepare RNA layers for Seurat v5
-# ============================================================
-
+# ------------------------------------------------------------------------------
 DefaultAssay(merged_seurat) <- "RNA"
 
 message("RNA layers before joining:")
 print(Layers(merged_seurat[["RNA"]]))
 
 if (length(Layers(merged_seurat[["RNA"]])) > 1) {
-  merged_seurat[["RNA"]] <- JoinLayers(
-    merged_seurat[["RNA"]]
-  )
+  merged_seurat[["RNA"]] <- JoinLayers(merged_seurat[["RNA"]])
 }
 
 message("RNA layers after joining:")
 print(Layers(merged_seurat[["RNA"]]))
 
 
-# ============================================================
-# 8. Preliminary normalization and PCA
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 8. Preliminary normalization and PCA
+# ------------------------------------------------------------------------------
 merged_seurat <- NormalizeData(
   merged_seurat,
   normalization.method = "LogNormalize",
@@ -365,10 +321,10 @@ merged_seurat <- RunPCA(
 )
 
 
-# ============================================================
-# 9. Qualitative batch-effect evaluation
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 9. Qualitative batch-effect evaluation
+# ------------------------------------------------------------------------------
 p_pca_sample <- DimPlot(
   merged_seurat,
   reduction = "pca",
@@ -382,21 +338,13 @@ p_pca_sample <- DimPlot(
     legend.title = element_blank()
   )
 
-save_pdf(
-  p_pca_sample,
-  file.path(
-    pre_figure_dir,
-    "01_PCA_by_sample.pdf"
-  ),
-  width = 7,
-  height = 6
-)
+save_pdf(p_pca_sample, file.path(pre_figure_dir, "01_PCA_by_sample.pdf"), width = 7, height = 6)
 
 
-# ============================================================
+
+# ------------------------------------------------------------------------------
 # 10. Quantitative batch-effect evaluation using kBET
-# ============================================================
-
+# ------------------------------------------------------------------------------
 kbet_result <- NULL
 
 if (requireNamespace("kBET", quietly = TRUE)) {
@@ -407,20 +355,16 @@ if (requireNamespace("kBET", quietly = TRUE)) {
     reduction = "pca"
   )[, 1:30, drop = FALSE]
 
-  batch_labels <- as.character(
-    merged_seurat$orig.ident
-  )
+  batch_labels <- as.character(merged_seurat$orig.ident)
 
   set.seed(1234)
 
   kbet_result <- tryCatch(
-    {
-      kBET::kBET(
-        df = pca_data,
-        batch = batch_labels,
-        plot = FALSE
-      )
-    },
+    kBET::kBET(
+      df = pca_data,
+      batch = batch_labels,
+      plot = FALSE
+    ),
     error = function(e) {
       warning("kBET failed: ", conditionMessage(e))
       NULL
@@ -428,25 +372,13 @@ if (requireNamespace("kBET", quietly = TRUE)) {
   )
 
   if (!is.null(kbet_result)) {
-    saveRDS(
-      kbet_result,
-      file.path(
-        pre_dir,
-        "kBET_result.rds"
-      )
-    )
+    saveRDS(kbet_result, file.path(pre_dir, "kBET_result.rds"))
 
-    writeLines(
-      capture.output(print(kbet_result)),
-      con = file.path(
-        pre_log_dir,
-        "kBET_result.txt"
-      )
-    )
+    writeLines(capture.output(print(kbet_result)), con = file.path(pre_log_dir, "kBET_result.txt"))
 
     message(
-      "kBET completed. Please inspect the full kBET output ",
-      "rather than relying on a single summary value."
+      "kBET completed. Inspect the full kBET output rather than relying ",
+      "on a single summary value."
     )
   }
 } else {
@@ -457,12 +389,13 @@ if (requireNamespace("kBET", quietly = TRUE)) {
 }
 
 
-# ============================================================
-# 11. Calculate mitochondrial percentages
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 11. Calculate mitochondrial percentages
+# ------------------------------------------------------------------------------
 # Human mitochondrial genes are generally annotated as MT-.
-# If the dataset uses a different naming convention, modify the pattern.
+# Modify the pattern if another gene naming convention is used.
+
 mitochondrial_genes <- grep(
   pattern = "^MT-",
   x = rownames(merged_seurat),
@@ -482,10 +415,10 @@ if (length(mitochondrial_genes) == 0) {
 }
 
 
-# ============================================================
-# 12. Visualize QC metrics before filtering
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 12. Visualize QC metrics before filtering
+# ------------------------------------------------------------------------------
 qc_features <- c(
   "nFeature_RNA",
   "nCount_RNA",
@@ -510,15 +443,7 @@ p_qc_violin <- VlnPlot(
     )
   )
 
-save_pdf(
-  p_qc_violin,
-  file.path(
-    pre_figure_dir,
-    "02_QC_metrics_before_filtering.pdf"
-  ),
-  width = 13,
-  height = 5
-)
+save_pdf(p_qc_violin, file.path(pre_figure_dir, "02_QC_metrics_before_filtering.pdf"), width = 13, height = 5)
 
 p_feature_scatter <- FeatureScatter(
   merged_seurat,
@@ -532,25 +457,15 @@ p_feature_scatter <- FeatureScatter(
     se = FALSE
   ) +
   theme_bw() +
-  theme(
-    panel.grid = element_blank()
-  )
+  theme(panel.grid = element_blank())
 
-save_pdf(
-  p_feature_scatter,
-  file.path(
-    pre_figure_dir,
-    "03_nCount_nFeature_scatter_before_filtering.pdf"
-  ),
-  width = 7,
-  height = 6
-)
+save_pdf(p_feature_scatter, file.path(pre_figure_dir, "03_nCount_nFeature_scatter_before_filtering.pdf"), width = 7, height = 6)
 
 
-# ============================================================
+
+# ------------------------------------------------------------------------------
 # 13. Cell-level quality control
-# ============================================================
-
+# ------------------------------------------------------------------------------
 min_features <- 200
 max_features <- 6000
 max_mt_percent <- 20
@@ -558,15 +473,12 @@ max_mt_percent <- 20
 cells_before_qc <- ncol(merged_seurat)
 
 if (!"percent.mt" %in% colnames(merged_seurat@meta.data)) {
-  stop(
-    "percent.mt is not available. QC filtering cannot be performed."
-  )
+  stop("percent.mt is not available. QC filtering cannot be performed.")
 }
 
 merged_seurat <- subset(
   merged_seurat,
-  subset =
-    nFeature_RNA > min_features &
+  subset = nFeature_RNA > min_features &
     nFeature_RNA < max_features &
     percent.mt < max_mt_percent
 )
@@ -574,44 +486,20 @@ merged_seurat <- subset(
 cells_after_qc <- ncol(merged_seurat)
 
 qc_cell_summary <- data.frame(
-  stage = c(
-    "Before QC",
-    "After QC"
-  ),
-  cells = c(
-    cells_before_qc,
-    cells_after_qc
-  )
+  stage = c("Before QC", "After QC"),
+  cells = c(cells_before_qc, cells_after_qc)
 )
 
-write.csv(
-  qc_cell_summary,
-  file = file.path(
-    pre_table_dir,
-    "cell_counts_before_after_QC.csv"
-  ),
-  row.names = FALSE
-)
+write.csv(qc_cell_summary, file = file.path(pre_table_dir, "cell_counts_before_after_QC.csv"), row.names = FALSE)
 
-message(
-  "Cells before QC: ",
-  cells_before_qc
-)
-
-message(
-  "Cells after QC: ",
-  cells_after_qc
-)
+message("Cells before QC: ", cells_before_qc)
+message("Cells after QC: ", cells_after_qc)
 
 
-# ============================================================
+
+# ------------------------------------------------------------------------------
 # 14. Recalculate normalization and PCA after QC
-# ============================================================
-
-# Re-run normalization and dimensionality reduction after QC.
-# This prevents cells removed during QC from influencing the
-# downstream feature selection and PCA space.
-
+# ------------------------------------------------------------------------------
 merged_seurat <- NormalizeData(
   merged_seurat,
   normalization.method = "LogNormalize",
@@ -640,23 +528,16 @@ merged_seurat <- RunPCA(
 )
 
 
-# ============================================================
-# 15. Save the QC-filtered object before doublet removal
-# ============================================================
 
-saveRDS(
-  merged_seurat,
-  file.path(
-    pre_dir,
-    "QC_filtered_before_doublet_removal.rds"
-  )
-)
+# ------------------------------------------------------------------------------
+# 15. Save QC-filtered object before doublet removal
+# ------------------------------------------------------------------------------
+saveRDS(merged_seurat, file.path(pre_dir, "QC_filtered_before_doublet_removal.rds"))
 
 
-# ============================================================
+# ------------------------------------------------------------------------------
 # 16. Doublet detection using scDblFinder
-# ============================================================
-
+# ------------------------------------------------------------------------------
 message("Converting Seurat object to SingleCellExperiment.")
 
 sce <- as.SingleCellExperiment(
@@ -664,7 +545,6 @@ sce <- as.SingleCellExperiment(
   assay = "RNA"
 )
 
-# Confirm that cell barcodes are consistent between objects.
 if (!identical(colnames(sce), colnames(merged_seurat))) {
   stop(
     "Cell barcode order differs between the Seurat and ",
@@ -672,9 +552,7 @@ if (!identical(colnames(sce), colnames(merged_seurat))) {
   )
 }
 
-colData(sce)$sample_id <- as.character(
-  merged_seurat$orig.ident
-)
+colData(sce)$sample_id <- as.character(merged_seurat$orig.ident)
 
 set.seed(1234)
 
@@ -700,9 +578,7 @@ if (length(missing_doublet_columns) > 0) {
   )
 }
 
-doublet_metadata <- as.data.frame(
-  colData(sce)
-)[
+doublet_metadata <- as.data.frame(colData(sce))[
   ,
   required_doublet_columns,
   drop = FALSE
@@ -710,7 +586,6 @@ doublet_metadata <- as.data.frame(
 
 rownames(doublet_metadata) <- colnames(sce)
 
-# Match doublet results explicitly by cell barcode.
 merged_seurat$scDblFinder.score <- doublet_metadata[
   colnames(merged_seurat),
   "scDblFinder.score"
@@ -729,19 +604,10 @@ doublet_summary <- merged_seurat@meta.data %>%
     name = "cells"
   ) %>%
   group_by(orig.ident) %>%
-  mutate(
-    proportion = cells / sum(cells)
-  ) %>%
+  mutate(proportion = cells / sum(cells)) %>%
   ungroup()
 
-write.csv(
-  doublet_summary,
-  file = file.path(
-    pre_table_dir,
-    "doublet_summary_by_sample.csv"
-  ),
-  row.names = FALSE
-)
+write.csv(doublet_summary, file = file.path(pre_table_dir, "doublet_summary_by_sample.csv"), row.names = FALSE)
 
 print(
   table(
@@ -752,10 +618,10 @@ print(
 )
 
 
-# ============================================================
-# 17. Remove predicted doublets
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 17. Remove predicted doublets
+# ------------------------------------------------------------------------------
 cells_before_doublet_removal <- ncol(merged_seurat)
 
 merged_seurat <- subset(
@@ -776,53 +642,27 @@ doublet_filter_summary <- data.frame(
   )
 )
 
-write.csv(
-  doublet_filter_summary,
-  file = file.path(
-    pre_table_dir,
-    "cell_counts_before_after_doublet_removal.csv"
-  ),
-  row.names = FALSE
-)
+write.csv(doublet_filter_summary, file = file.path(pre_table_dir, "cell_counts_before_after_doublet_removal.csv"), row.names = FALSE)
 
-message(
-  "Cells before doublet removal: ",
-  cells_before_doublet_removal
-)
-
-message(
-  "Cells after doublet removal: ",
-  cells_after_doublet_removal
-)
+message("Cells before doublet removal: ", cells_before_doublet_removal)
+message("Cells after doublet removal: ", cells_after_doublet_removal)
 
 
-# ============================================================
-# 18. Save the final QC-filtered object
-# ============================================================
 
-clean_data_file <- file.path(
-  pre_dir,
-  "cleanData.rds"
-)
+# ------------------------------------------------------------------------------
+# 18. Save final QC-filtered object
+# ------------------------------------------------------------------------------
+clean_data_file <- file.path(pre_dir, "cleanData.rds")
 
-saveRDS(
-  merged_seurat,
-  clean_data_file
-)
+saveRDS(merged_seurat, clean_data_file)
 
-write_object_summary(
-  merged_seurat,
-  file.path(
-    pre_log_dir,
-    "02_cleanData_object_summary.txt"
-  )
-)
+write_object_summary(merged_seurat, file.path(pre_log_dir, "02_cleanData_object_summary.txt"))
 
 
-# ============================================================
-# 19. Final normalization and PCA after doublet removal
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 19. Final normalization and PCA
+# ------------------------------------------------------------------------------
 merged_seurat <- NormalizeData(
   merged_seurat,
   normalization.method = "LogNormalize",
@@ -851,26 +691,23 @@ merged_seurat <- RunPCA(
 )
 
 
-# ============================================================
-# 20. Construct the neighbor graph
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 20. Construct neighbor graph
+# ------------------------------------------------------------------------------
 merged_seurat <- FindNeighbors(
   merged_seurat,
   reduction = "pca",
   dims = 1:50,
-  graph.name = c(
-    "myKNN_nn",
-    "myKNN_snn"
-  ),
+  graph.name = c("myKNN_nn", "myKNN_snn"),
   verbose = FALSE
 )
 
 
-# ============================================================
-# 21. Multi-resolution clustering
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 21. Multi-resolution clustering
+# ------------------------------------------------------------------------------
 clustering_resolutions <- seq(
   from = 0.2,
   to = 1.5,
@@ -896,10 +733,10 @@ message("Generated clustering columns:")
 print(clustering_columns)
 
 
-# ============================================================
-# 22. Clustering tree
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 22. Clustering tree
+# ------------------------------------------------------------------------------
 p_clustree <- clustree(
   merged_seurat@meta.data,
   prefix = "myKNN_snn_res.",
@@ -908,23 +745,15 @@ p_clustree <- clustree(
   ggtitle("Clustering tree by resolution") +
   theme_bw()
 
-save_pdf(
-  p_clustree,
-  file.path(
-    pre_figure_dir,
-    "04_clustering_tree.pdf"
-  ),
-  width = 10,
-  height = 8
-)
+save_pdf(p_clustree, file.path(pre_figure_dir, "04_clustering_tree.pdf"), width = 10, height = 8)
 
 
-# ============================================================
-# 23. Select the final clustering resolution
-# ============================================================
 
-# Change this value if another resolution is selected after
-# inspecting the clustering tree and marker genes.
+# ------------------------------------------------------------------------------
+# 23. Select final clustering resolution
+# ------------------------------------------------------------------------------
+# Change this value after inspecting the clustering tree and marker genes.
+
 final_resolution <- 0.6
 
 final_cluster_column <- paste0(
@@ -939,19 +768,16 @@ if (!final_cluster_column %in% colnames(merged_seurat@meta.data)) {
   )
 }
 
-merged_seurat$seurat_clusters <- merged_seurat@meta.data[
-  [final_cluster_column]
-]
+merged_seurat$seurat_clusters <- merged_seurat[[final_cluster_column, drop = TRUE]]
 
 Idents(merged_seurat) <- "seurat_clusters"
 
 message("Final cluster sizes:")
 print(table(merged_seurat$seurat_clusters))
 
-
-# ============================================================
-# 24. Run UMAP using the PCA coordinates
-# ============================================================
+# ------------------------------------------------------------------------------
+# 24. Run UMAP
+# ------------------------------------------------------------------------------
 
 merged_seurat <- RunUMAP(
   merged_seurat,
@@ -964,10 +790,10 @@ merged_seurat <- RunUMAP(
 )
 
 
-# ============================================================
-# 25. Generate final clustering plots
-# ============================================================
 
+# ------------------------------------------------------------------------------
+# 25. Generate final clustering plots
+# ------------------------------------------------------------------------------
 p_cluster <- DimPlot(
   merged_seurat,
   reduction = "umap.pca",
@@ -989,15 +815,7 @@ p_cluster <- DimPlot(
     legend.title = element_blank()
   )
 
-save_pdf(
-  p_cluster,
-  file.path(
-    pre_figure_dir,
-    "05_final_clustering_UMAP.pdf"
-  ),
-  width = 8,
-  height = 6
-)
+save_pdf(p_cluster, file.path(pre_figure_dir, "05_final_clustering_UMAP.pdf"), width = 8, height = 6)
 
 p_cluster_sample <- DimPlot(
   merged_seurat,
@@ -1012,46 +830,20 @@ p_cluster_sample <- DimPlot(
     legend.title = element_blank()
   )
 
-save_pdf(
-  p_cluster_sample,
-  file.path(
-    pre_figure_dir,
-    "06_final_UMAP_by_sample.pdf"
-  ),
-  width = 8,
-  height = 6
-)
+save_pdf(p_cluster_sample, file.path(pre_figure_dir, "06_final_UMAP_by_sample.pdf"), width = 8, height = 6)
 
 
-# ============================================================
-# 26. Save the final preprocessing object
-# ============================================================
 
-final_object_file <- file.path(
-  pre_dir,
-  "cluster.rds"
-)
+# ------------------------------------------------------------------------------
+# 26. Save final preprocessing object and session information
+# ------------------------------------------------------------------------------
+final_object_file <- file.path(pre_dir, "cluster.rds")
 
-saveRDS(
-  merged_seurat,
-  final_object_file
-)
+saveRDS(merged_seurat, final_object_file)
 
-write_object_summary(
-  merged_seurat,
-  file.path(
-    pre_log_dir,
-    "03_cluster_object_summary.txt"
-  )
-)
+write_object_summary(merged_seurat, file.path(pre_log_dir, "03_cluster_object_summary.txt"))
 
-writeLines(
-  capture.output(sessionInfo()),
-  con = file.path(
-    pre_log_dir,
-    "preprocessing_sessionInfo.txt"
-  )
-)
+writeLines(capture.output(sessionInfo()), con = file.path(pre_log_dir, "preprocessing_sessionInfo.txt"))
 
 message("Preprocessing pipeline completed successfully.")
 message("Final object saved to: ", final_object_file)
